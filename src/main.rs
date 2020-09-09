@@ -2,17 +2,16 @@ extern crate nix;
 extern crate regex;
 extern crate time;
 
-use time::Time;
-use nix::sys::mman::{*, ProtFlags, MapFlags};
+use nix::sys::mman::{MapFlags, ProtFlags, *};
 use regex::Regex;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::os::unix::io::AsRawFd; 
+use std::os::unix::io::AsRawFd;
 use std::{thread, time as stdtime};
-
+use time::Time;
 
 #[derive(Debug)]
 struct ProfilingError {
@@ -167,12 +166,11 @@ static AXI_PCIE: u32 = 0x303F001B;
 static AXI_SATA: u32 = 0x3FFF00E3;
 static AXI_DEFAULT: u32 = 0x00000000;
 
-static MMDC_P0_IPS_BASE_ADDR : i64 = 0x021B0000;
-static MMDC_P1_IPS_BASE_ADDR : i64 = 0x021B4000;
+static MMDC_P0_IPS_BASE_ADDR: i64 = 0x021B0000;
+static MMDC_P1_IPS_BASE_ADDR: i64 = 0x021B4000;
 
 fn get_system_revision() -> Result<u32, ProfilingError> {
-    let mut f = match File::open("/home/hggw/priv/r-mmdc/src/cpu_info.dummy") {
-        //TODO: /proc/cpuinfo
+    let mut f = match File::open("/proc/cpuinfo") {
         Ok(file) => file,
         Err(_) => return Err(ProfilingError::new("Error opening /proc/cpuinfo")),
     };
@@ -192,8 +190,6 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
         Err(_) => return Err(ProfilingError::new("Error reading cpu info")),
     };
 
-
-
     let read_string = String::from_utf8_lossy(&buffer);
     //find Revision: <something in string>
     let re = Regex::new(r"Revision\s*:\s*([a-fA-F0-9]+)").unwrap(); //lotso unwraping, it's like christmas
@@ -203,8 +199,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
 
     if revision == 0u32 {
         let mut sbuffer = [0_u8; 2048]; // just to be sure, prevent strange behaviour by buffer reusage
-        let mut soc_file = match File::open("/home/hggw/priv/r-mmdc/src/soc_id.dummy") {
-            //TODO: /sys/devices/soc0/soc_id
+        let mut soc_file = match File::open("TODO: /sys/devices/soc0/soc_id") {
             Ok(file) => file,
             Err(_) => {
                 return Err(ProfilingError::new(
@@ -221,21 +216,20 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
                         "Error reading soc id, no bytes read or buffer full",
                     ));
                 }
-                
             }
             Err(_) => return Err(ProfilingError::new("Error reading cpu info")),
         };
-        let soc_id :String= String::from_utf8_lossy(&sbuffer).to_string();
+        let soc_id: String = String::from_utf8_lossy(&sbuffer).to_string();
         println!("Read soc id {}", soc_id);
         return if soc_id.starts_with("i.MX6Q") {
-          Ok(0x63000u32)
-        } else if  soc_id.starts_with("i.MX6DL") {
-           Ok(0x61000u32)
-        }else if soc_id.starts_with("i.MX6SL") {
+            Ok(0x63000u32)
+        } else if soc_id.starts_with("i.MX6DL") {
+            Ok(0x61000u32)
+        } else if soc_id.starts_with("i.MX6SL") {
             Ok(0x60000u32)
-        }else {
+        } else {
             Err(ProfilingError::new("Unknown soc id2"))
-        }
+        };
     }
     Err(ProfilingError::new("Unknown soc id"))
 }
@@ -309,55 +303,60 @@ fn get_mmdc_profiling_results(mmdc: &MMDC) -> MMDCProfileResult {
 }
 
 fn get_tick_count() -> u64 {
-   let t = time::Time::now();
-   ((t.second() as u32 *1000u32 ) as u64 / (t.microsecond() as u32 /1000 as u32) as u64) as u64
+    let t = time::Time::now();
+    ((t.second() as u32 * 1000u32) as u64 / (t.microsecond() as u32 / 1000 as u32) as u64) as u64
 }
 
-fn clear_mmdc(mmdc: &mut MMDC){
+fn clear_mmdc(mmdc: &mut MMDC) {
     mmdc.madpcr0 = 0xA; // Reset counters and clear Overflow bit
     unsafe {
-        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap(); 
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap();
     }
 }
 
-fn start_mmdc_profiling(mmdc: &mut MMDC){
-    unsafe {  
-         mmdc.madpcr0 = 0xA;		// Reset counters and clear Overflow bit
-        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4, MsFlags::MS_SYNC).unwrap();
-    
-        mmdc.madpcr0 = 0x1;		// Enable counters
-        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+fn start_mmdc_profiling(mmdc: &mut MMDC) {
+    unsafe {
+        mmdc.madpcr0 = 0xA; // Reset counters and clear Overflow bit
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap();
+
+        mmdc.madpcr0 = 0x1; // Enable counters
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap();
     }
 }
 
-fn load_mmdc_results(mmdc: &mut MMDC){
+fn load_mmdc_results(mmdc: &mut MMDC) {
     mmdc.madpcr0 |= 0x4; //sets the PRF_FRZ bit to 1 in order to load the results into the registers
     unsafe {
-        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap();
     }
 }
 
-fn stop_mmdc_profiling(mmdc: &mut MMDC)
-{
-    mmdc.madpcr0 = 0x0;		// Disable counters
+fn stop_mmdc_profiling(mmdc: &mut MMDC) {
+    mmdc.madpcr0 = 0x0; // Disable counters
     unsafe {
-        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap();
     }
 }
 
 fn main() {
-   
-    let mmdc : &mut MMDC;
-     unsafe{
+    let mmdc: &mut MMDC;
+    unsafe {
         let protflag: ProtFlags = ProtFlags::from_bits(0x03).expect("invalid protflags");
-    
+
         let fd = match File::open("/dev/mem") {
             Err(e) => panic!("couldn't open /dev/mem: {}", e),
             Ok(file) => file,
         };
-        match mmap(std::ptr::null_mut(), 0x4000, protflag, MapFlags::MAP_SHARED, fd.as_raw_fd() , MMDC_P0_IPS_BASE_ADDR){
+        match mmap(
+            std::ptr::null_mut(),
+            0x4000,
+            protflag,
+            MapFlags::MAP_SHARED,
+            fd.as_raw_fd(),
+            MMDC_P0_IPS_BASE_ADDR,
+        ) {
             Ok(p) => mmdc = &mut *(p as *mut MMDC),
-            Err(_) => panic!("Error mapping memory")
+            Err(_) => panic!("Error mapping memory"),
         };
     };
     println!("Succesfully mapped memory");
@@ -366,7 +365,6 @@ fn main() {
     //    Ok(_) => true,
     //    Err(_) => false,
     //}; UNUSED FOR NOW
-
 
     clear_mmdc(mmdc);
     let start_time = get_tick_count();
