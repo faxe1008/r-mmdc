@@ -1,13 +1,15 @@
 extern crate nix;
 extern crate regex;
 
-use nix::sys::mman::*;
+use nix::sys::mman::{*, ProtFlags, MapFlags};
 use regex::Regex;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::os::unix::io::AsRawFd; 
+
 
 #[derive(Debug)]
 struct ProfilingError {
@@ -34,6 +36,7 @@ impl Error for ProfilingError {
     }
 }
 
+#[derive(Debug)]
 struct MMDC {
     mdctl: u32,
     mdpdc: u32,
@@ -162,6 +165,9 @@ static AXI_PCIE: u32 = 0x303F001B;
 static AXI_SATA: u32 = 0x3FFF00E3;
 static AXI_DEFAULT: u32 = 0x00000000;
 
+static MMDC_P0_IPS_BASE_ADDR : i64 = 0x021B0000;
+static MMDC_P1_IPS_BASE_ADDR : i64 = 0x021B4000;
+
 fn get_system_revision() -> Result<u32, ProfilingError> {
     let mut f = match File::open("/home/hggw/priv/r-mmdc/src/cpu_info.dummy") {
         //TODO: /proc/cpuinfo
@@ -171,7 +177,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
 
     let mut buffer = [0_u8; 2048];
 
-    let read_size = match f.read(&mut buffer) {
+    match f.read(&mut buffer) {
         Ok(rsize) => {
             println!("/proc/cpuinfo read size: {}", rsize);
             if rsize == 0 || rsize == 2048 {
@@ -184,7 +190,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
         Err(_) => return Err(ProfilingError::new("Error reading cpu info")),
     };
 
-    buffer[read_size] = 0; // nullbyte probably not necessary
+
 
     let read_string = String::from_utf8_lossy(&buffer);
     //find Revision: <something in string>
@@ -205,7 +211,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
             }
         };
 
-        let read_size = match soc_file.read(&mut sbuffer) {
+        match soc_file.read(&mut sbuffer) {
             Ok(rsize) => {
                 println!("/sys/devices/soc0/soc_id read size: {}", rsize);
                 if rsize == 0 || rsize == 2048 {
@@ -213,7 +219,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
                         "Error reading soc id, no bytes read or buffer full",
                     ));
                 }
-                rsize
+                
             }
             Err(_) => return Err(ProfilingError::new("Error reading cpu info")),
         };
@@ -300,6 +306,32 @@ fn get_mmdc_profiling_results(mmdc: &MMDC) -> MMDCProfileResult {
     result
 }
 
+fn clear_mmdc(mmdc: &mut MMDC){
+    mmdc.madpcr0 = 0xA; // Reset counters and clear Overflow bit
+    //msync(, 4, MsFlags::MS_SYNC); FIXME
+}
+
 fn main() {
-    get_system_revision().expect("Error reading cpu info");
+   
+    let mmdc : &mut MMDC;
+     unsafe{
+        let protflag: ProtFlags = ProtFlags::from_bits(0x03).expect("invalid protflags");
+    
+        let fd = match File::open("/dev/mem") {
+            Err(e) => panic!("couldn't open /dev/mem: {}", e),
+            Ok(file) => file,
+        };
+        match mmap(std::ptr::null_mut(), 0x4000, protflag, MapFlags::MAP_SHARED, fd.as_raw_fd() , MMDC_P0_IPS_BASE_ADDR){
+            Ok(p) => mmdc = &mut *(p as *mut MMDC),
+            Err(_) => panic!("Error mapping memory")
+        };
+    };
+    println!("Succesfully mapped memory");
+
+    let allow_parameters = match get_system_revision() {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    clear_mmdc(mmdc);
+    println!("{:?}", mmdc);
 }
