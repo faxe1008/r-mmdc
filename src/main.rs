@@ -1,6 +1,8 @@
 extern crate nix;
 extern crate regex;
+extern crate time;
 
+use time::Time;
 use nix::sys::mman::{*, ProtFlags, MapFlags};
 use regex::Regex;
 use std::error::Error;
@@ -9,6 +11,7 @@ use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::os::unix::io::AsRawFd; 
+use std::{thread, time as stdtime};
 
 
 #[derive(Debug)]
@@ -36,7 +39,6 @@ impl Error for ProfilingError {
     }
 }
 
-#[derive(Debug)]
 struct MMDC {
     mdctl: u32,
     mdpdc: u32,
@@ -238,7 +240,7 @@ fn get_system_revision() -> Result<u32, ProfilingError> {
     Err(ProfilingError::new("Unknown soc id"))
 }
 
-fn print_profiling_results(profiling_result: &MMDCProfileResult, time: u32) {
+fn print_profiling_results(profiling_result: &MMDCProfileResult, time: u64) {
     //why the hell is time an int32?
     println!("MMDC new Profiling results:");
     println!("***********************");
@@ -306,9 +308,41 @@ fn get_mmdc_profiling_results(mmdc: &MMDC) -> MMDCProfileResult {
     result
 }
 
+fn get_tick_count() -> u64 {
+   let t = time::Time::now();
+   ((t.second() as u32 *1000u32 ) as u64 / (t.microsecond() as u32 /1000 as u32) as u64) as u64
+}
+
 fn clear_mmdc(mmdc: &mut MMDC){
     mmdc.madpcr0 = 0xA; // Reset counters and clear Overflow bit
-    //msync(, 4, MsFlags::MS_SYNC); FIXME
+    unsafe {
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _, 4, MsFlags::MS_SYNC).unwrap(); 
+    }
+}
+
+fn start_mmdc_profiling(mmdc: &mut MMDC){
+    unsafe {  
+         mmdc.madpcr0 = 0xA;		// Reset counters and clear Overflow bit
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4, MsFlags::MS_SYNC).unwrap();
+    
+        mmdc.madpcr0 = 0x1;		// Enable counters
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+    }
+}
+
+fn load_mmdc_results(mmdc: &mut MMDC){
+    mmdc.madpcr0 |= 0x4; //sets the PRF_FRZ bit to 1 in order to load the results into the registers
+    unsafe {
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+    }
+}
+
+fn stop_mmdc_profiling(mmdc: &mut MMDC)
+{
+    mmdc.madpcr0 = 0x0;		// Disable counters
+    unsafe {
+        msync(&mut mmdc.madpcr0 as *mut _ as *mut _,4,MsFlags::MS_SYNC).unwrap();
+    }
 }
 
 fn main() {
@@ -328,10 +362,18 @@ fn main() {
     };
     println!("Succesfully mapped memory");
 
-    let allow_parameters = match get_system_revision() {
-        Ok(_) => true,
-        Err(_) => false,
-    };
+    //let allow_parameters = match get_system_revision() {
+    //    Ok(_) => true,
+    //    Err(_) => false,
+    //}; UNUSED FOR NOW
+
+
     clear_mmdc(mmdc);
-    println!("{:?}", mmdc);
+    let start_time = get_tick_count();
+    start_mmdc_profiling(mmdc);
+    thread::sleep(stdtime::Duration::from_secs(1));
+    load_mmdc_results(mmdc);
+    let results = get_mmdc_profiling_results(mmdc);
+    print_profiling_results(&results, get_tick_count() - start_time);
+    stop_mmdc_profiling(mmdc);
 }
